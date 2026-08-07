@@ -176,3 +176,53 @@ test('http2 sse removes request and session timeout test', async (t) => {
   instance.close()
   target.close()
 })
+
+test('http2 sse removes request and session timeout when content-type is uppercase and has parameters', async (t) => {
+  // A media type is case-insensitive and may carry parameters (RFC 9110 §8.3.1).
+  const target = Fastify({ http2: true, sessionTimeout: 0 })
+  t.after(() => target.close())
+
+  target.get('/', (_request, reply) => {
+    t.assert.ok('request arrives')
+
+    reply.hijack()
+    reply.raw.writeHead(200, { 'content-type': 'Text/Event-Stream;charset=UTF-8' })
+    reply.raw.write('data: first\n\n')
+
+    // An SSE stream is idle between events. Stay quiet for longer than the
+    // proxy's session timeout, which is exactly what the timeout must not cut.
+    setTimeout(() => reply.raw.end('data: last\n\n'), 300)
+  })
+
+  await target.listen({ port: 0 })
+
+  const instance = Fastify()
+  t.after(() => instance.close())
+
+  instance.register(From, {
+    base: `http://localhost:${target.server.address().port}`,
+    http2: { sessionTimeout: 100 }
+  })
+
+  instance.get('/', (_request, reply) => {
+    reply.from(`http://localhost:${target.server.address().port}/`)
+  })
+
+  await instance.listen({ port: 0 })
+
+  const { statusCode, body } = await request(`http://localhost:${instance.server.address().port}/`, { dispatcher: new Agent({ pipelining: 0 }) })
+  t.assert.strictEqual(statusCode, 200)
+
+  let received = ''
+  let streamError = null
+  try {
+    for await (const chunk of body) {
+      received += chunk
+    }
+  } catch (err) {
+    streamError = err
+  }
+
+  t.assert.strictEqual(streamError, null, 'the proxied SSE stream must not be aborted')
+  t.assert.strictEqual(received, 'data: first\n\ndata: last\n\n')
+})

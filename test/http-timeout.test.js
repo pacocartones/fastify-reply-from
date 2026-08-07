@@ -1,6 +1,7 @@
 'use strict'
 
 const { test } = require('node:test')
+const http = require('node:http')
 const Fastify = require('fastify')
 const { request, Agent } = require('undici')
 const From = require('..')
@@ -137,4 +138,54 @@ test('http sse removes timeout test', async (t) => {
     })
   })
   t.assert.strictEqual(statusCode, 200)
+})
+
+test('http sse removes timeout when content-type has parameters', async (t) => {
+  // A media type is case-insensitive and may carry parameters (RFC 9110 §8.3.1).
+  // `text/event-stream; charset=utf-8` is what Starlette's EventSourceResponse
+  // and Spring emit, and it must be treated as SSE just the same.
+  const target = http.createServer((_req, res) => {
+    t.assert.ok('request arrives')
+
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+    res.write('data: first\n\n')
+
+    // An SSE stream is idle between events. Stay quiet for longer than the
+    // proxy's socket timeout, which is exactly what the timeout must not cut.
+    setTimeout(() => res.end('data: last\n\n'), 300)
+  })
+  t.after(() => target.close())
+
+  await new Promise(resolve => target.listen({ port: 0 }, resolve))
+
+  const instance = Fastify()
+  t.after(() => instance.close())
+
+  instance.register(From, { http: { requestOptions: { timeout: 100 } } })
+
+  instance.get('/', (_request, reply) => {
+    reply.from(`http://localhost:${target.address().port}/`)
+  })
+
+  await instance.listen({ port: 0 })
+
+  const { statusCode, body } = await request(`http://localhost:${instance.server.address().port}/`, {
+    dispatcher: new Agent({
+      pipelining: 0
+    })
+  })
+  t.assert.strictEqual(statusCode, 200)
+
+  let received = ''
+  let streamError = null
+  try {
+    for await (const chunk of body) {
+      received += chunk
+    }
+  } catch (err) {
+    streamError = err
+  }
+
+  t.assert.strictEqual(streamError, null, 'the proxied SSE stream must not be aborted')
+  t.assert.strictEqual(received, 'data: first\n\ndata: last\n\n')
 })
