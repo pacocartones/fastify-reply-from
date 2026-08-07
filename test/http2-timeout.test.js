@@ -191,7 +191,7 @@ test('http2 sse removes request and session timeout when content-type is upperca
 
     // An SSE stream is idle between events. Stay quiet for longer than the
     // proxy's session timeout, which is exactly what the timeout must not cut.
-    setTimeout(() => reply.raw.end('data: last\n\n'), 300)
+    setTimeout(() => reply.raw.end('data: last\n\n'), 2000)
   })
 
   await target.listen({ port: 0 })
@@ -200,8 +200,11 @@ test('http2 sse removes request and session timeout when content-type is upperca
   t.after(() => instance.close())
 
   instance.register(From, {
+    // The session timer is armed on connect, so it has to outlast connecting
+    // plus the first response even on a loaded runner. The quiet period above
+    // then outlasts the timer, which is what fails without the fix.
     base: `http://localhost:${target.server.address().port}`,
-    http2: { sessionTimeout: 100 }
+    http2: { sessionTimeout: 1000 }
   })
 
   instance.get('/', (_request, reply) => {

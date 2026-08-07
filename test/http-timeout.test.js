@@ -152,7 +152,7 @@ test('http sse removes timeout when content-type has parameters', async (t) => {
 
     // An SSE stream is idle between events. Stay quiet for longer than the
     // proxy's socket timeout, which is exactly what the timeout must not cut.
-    setTimeout(() => res.end('data: last\n\n'), 300)
+    setTimeout(() => res.end('data: last\n\n'), 2000)
   })
   t.after(() => target.close())
 
@@ -161,7 +161,10 @@ test('http sse removes timeout when content-type has parameters', async (t) => {
   const instance = Fastify()
   t.after(() => instance.close())
 
-  instance.register(From, { http: { requestOptions: { timeout: 100 } } })
+  // Same headroom as the http2 sibling: the timeout has to survive connecting
+  // plus the first response on a loaded runner, and the quiet period above has
+  // to outlast the timeout.
+  instance.register(From, { http: { requestOptions: { timeout: 1000 } } })
 
   instance.get('/', (_request, reply) => {
     reply.from(`http://localhost:${target.address().port}/`)
